@@ -24,7 +24,8 @@ std::string GetFormattedCurrentTime()
     std::tm local_tm;
     localtime_s(&local_tm, &time_t_now);
     std::ostringstream oss;
-    oss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S");
+    //oss << std::put_time(&local_tm, "%H:%M:%S");
+    oss << std::put_time(&local_tm, "%H:%M");
     return oss.str();
 }
 
@@ -123,20 +124,46 @@ void ChatServer::HandleClient(SOCKET clientSocket) {
     char buffer[1024];
     int bytes;
 
-    // 처음에 닉네임 먼저 받기
+    // 처음 메시지는 LOGIN:<id>:<pw> 형식으로 오므로 파싱 필요
     bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
     if (bytes <= 0) return;
     buffer[bytes] = '\0';
-    std::string nickname = Trim(std::string(buffer));
+    std::string firstMessage = Trim(std::string(buffer)); // LOGIN:<id>:<pw> 형식
+    std::string id;
 
+    if (firstMessage.starts_with("LOGIN:"))
     {
-        std::lock_guard<std::mutex> lock(clientMutex);
-        clientNames[clientSocket] = nickname;
-    }
+        // 임시로 ID를 닉네임으로 설정 (예: LOGIN:myid:mypw)
+        size_t firstColon = firstMessage.find(":");
+        size_t secondColon = firstMessage.find(":", firstColon + 1);
+        if (firstColon != std::string::npos && secondColon != std::string::npos)
+        {
+            id = firstMessage.substr(firstColon + 1, secondColon - firstColon - 1);
+        }
+        else
+        {
+            id = "알 수 없음";
+        }
 
-    std::string joinMessage = nickname + "님이 입장하셨습니다.";
-    Broadcast(Trim(joinMessage), INVALID_SOCKET); // 모두에게 입장 메시지 전송
-    BroadcastUserList();  // 리스트도 같이 전송
+        {
+            std::lock_guard<std::mutex> lock(clientMutex);
+            clientNames[clientSocket] = id;
+        }
+
+        std::cout << "[서버] 로그인 처리됨: " << id << std::endl;
+
+        // 로그인 성공 응답 전송(서버->클라이언트)
+        std::string response = "LOGIN_SUCCESS";
+        send(clientSocket, response.c_str(), response.size(), 0);
+    }
+    else
+    {
+        // 로그인 실패 응답 (형식이 이상하면)
+        std::string response = "LOGIN_FAIL";
+        send(clientSocket, response.c_str(), response.size(), 0);
+        closesocket(clientSocket);
+        return;
+    }
 
     // 메시지 수신 루프
     while ((bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0)) > 0) {
@@ -144,37 +171,104 @@ void ChatServer::HandleClient(SOCKET clientSocket) {
 
         std::string trimmed = Trim(std::string(buffer));
 
+        std::cout << trimmed << std::endl;
+
         // __DISCONNECT__ 메시지는 브로드캐스트하지 않고 종료 처리
         if (trimmed == "__DISCONNECT__") {
-            std::cout << "[서버] 클라이언트 " << nickname << "가 종료 요청함." << std::endl;
+            std::cout << "[서버] 클라이언트 " << id << "님이 종료 요청함." << std::endl;
             break;
         }
 
-        std::string time = GetFormattedCurrentTime();
-
-        std::lock_guard<std::mutex> lock(clientMutex);
-        for (SOCKET s : clients) 
+        // 채팅방 생성 처리
+        if (trimmed.starts_with("CREATE_ROOM:"))
         {
-            std::string label = "[" + nickname + "]"; // 나도 닉네임으로 표시
-            std::string fullMessage = "[" + time + "] " + label + " " + Trim(buffer);
-            send(s, fullMessage.c_str(), fullMessage.size(), 0);
+            std::string roomName = trimmed.substr(strlen("CREATE_ROOM:"));
+            std::lock_guard<std::mutex> lock(clientMutex);
+            roomList[roomName];
+            continue;
         }
+
+
+        // 채팅방 참여 처리
+        if (trimmed.starts_with("JOIN_ROOM:")) 
+        {
+            std::string roomName = trimmed.substr(std::string("JOIN_ROOM:").length());
+
+            {
+                std::lock_guard<std::mutex> lock(clientMutex);
+                roomList[roomName].insert(clientSocket);
+                clientRooms[clientSocket].insert(roomName);
+            }
+
+            std::string joinMessage = "SYSTEM:" + id + "님이 채팅방 [" + roomName + "]에 입장하셨습니다.";
+
+            std::cout << joinMessage << std::endl;
+
+            BroadcastToRoom(roomName, joinMessage, INVALID_SOCKET);
+            BroadcastUserList(roomName); // 채팅방 참여했을 때 참여자 리스트 업데이트
+            continue;  // 다음 루프로 넘어감
+        }
+
+        // 채팅방 퇴장 처리
+        if (trimmed.starts_with("LEAVE_ROOM:"))
+        {
+            std::string roomName = trimmed.substr(std::string("LEAVE_ROOM:").length());
+
+            {
+                std::lock_guard<std::mutex> lock(clientMutex);
+                roomList[roomName].erase(clientSocket);
+                clientRooms[clientSocket].erase(roomName);
+            }
+
+            std::string leaveMessage = "SYSTEM:" + id + "님이 채팅방 [" + roomName + "]에서 퇴장하셨습니다.";
+            std::cout << leaveMessage << std::endl;
+
+            BroadcastToRoom(roomName, leaveMessage, INVALID_SOCKET);
+            BroadcastUserList(roomName);
+            continue;
+        }
+
+        // 일반 채팅 메시지 처리
+        size_t p1 = trimmed.find(':'); // 첫 번째 ':' 위치
+        size_t p2 = trimmed.find(':', p1 + 1); // 두 번째 ':' 위치
+
+        if (p1 == std::string::npos || p2 == std::string::npos) return;
+
+        std::string roomId = trimmed.substr(0, p1); // 방 ID
+        std::string sender = trimmed.substr(p1 + 1, p2 - p1 - 1); // 보낸 사람
+        std::string content = trimmed.substr(p2 + 1); // 메시지 내용
+
+        std::string time = GetFormattedCurrentTime();
+        //std::string fullMessage = "ROOMMSG:" + roomId + ":" + sender + ":" + content;
+        std::string fullMessage = "ROOMMSG:" + roomId + ":" + time + ":" + sender + ":" + content;
+
+        BroadcastToRoom(roomId, fullMessage, clientSocket);
     }
 
-    // 나갈 때 처리
-
+    // 나갈 때 처리(__DISCONNECT__로 프로그램이 종료되었을 때, 모든 채팅방에서 종료 처리)
+    std::set<std::string> roomsToExit;
     {
         std::lock_guard<std::mutex> lock(clientMutex);
+        roomsToExit = clientRooms[clientSocket];
+        clientRooms.erase(clientSocket);
+
+        for (const std::string& room : roomsToExit)
+        {
+            roomList[room].erase(clientSocket);
+        }
+
         clients.erase(std::remove(clients.begin(), clients.end(), clientSocket), clients.end());
         clientNames.erase(clientSocket);
     }
 
+    for (const std::string& room : roomsToExit) 
+    {
+        std::string exitMessage = "SYSTEM:" + id + "님이 채팅방 [" + room + "]에서 퇴장하셨습니다.";
+        BroadcastToRoom(room, exitMessage, INVALID_SOCKET);
+        BroadcastUserList(room);
+    }
+
     closesocket(clientSocket);
-
-    std::string exitMessage = nickname + "님이 퇴장하셨습니다.";
-    Broadcast(Trim(exitMessage), INVALID_SOCKET); // 모두에게 퇴장 메시지 전송
-
-    BroadcastUserList();  // 나간 뒤에도 업데이트
 }
 
 void ChatServer::Broadcast(const std::string& message, SOCKET exclude)
@@ -182,67 +276,96 @@ void ChatServer::Broadcast(const std::string& message, SOCKET exclude)
     if (!isRunning) return;
 
     std::vector<SOCKET> socketsToSend;
-    std::vector<SOCKET> invalidSockets;
-
-    {   // 🔒 Lock을 짧게만 유지하면서 복사만 한다
-        std::lock_guard<std::mutex> lock(clientMutex);
-        if (clients.empty()) return;
-
-        for (SOCKET s : clients) {
-            if (s != exclude) {
-                socketsToSend.push_back(s);
-            }
-        }
-    }
-
-    for (SOCKET s : socketsToSend) {
-        int result = send(s, message.c_str(), message.size(), 0);
-        if (result == SOCKET_ERROR) {
-            std::cerr << "send() error: " << WSAGetLastError() << std::endl;
-            invalidSockets.push_back(s);
-        }
-    }
-
-    // 🔥 죽은 소켓을 안전하게 제거
-    if (!invalidSockets.empty()) {
-        std::lock_guard<std::mutex> lock(clientMutex);
-        for (SOCKET s : invalidSockets) {
-            closesocket(s);
-            clients.erase(std::remove(clients.begin(), clients.end(), s), clients.end());
-            clientNames.erase(s);
-        }
-    }
-}
-
-void ChatServer::BroadcastUserList()
-{
-    if (!isRunning || isShuttingDown) return;
-
-    std::string list = "[USER_LIST]";
-    std::vector<SOCKET> invalidSockets;
+    //std::vector<SOCKET> invalidSockets;
 
     {
-
         std::lock_guard<std::mutex> lock(clientMutex);
-        if (clients.empty()) return;  // ✅ 클라이언트가 없으면 아무것도 안 함
-
-        for (const auto& [sock, name] : clientNames) {
-            if (name.empty()) {
-                invalidSockets.push_back(sock);
-            }
-            else {
-                list += name + ";";
-            }
-        }
-
-        for (SOCKET s : invalidSockets) {
-            clientNames.erase(s);
-            clients.erase(std::remove(clients.begin(), clients.end(), s), clients.end());
-            closesocket(s);
-        }
+        for (SOCKET s : clients)
+            if (s != exclude) socketsToSend.push_back(s);
     }
 
-    if (!list.empty()) {
-        Broadcast(list); // isRunning은 Broadcast에서도 확인하도록
-    }
+    for (SOCKET s : socketsToSend)
+        send(s, message.c_str(), message.size(), 0);  
 }
+
+void ChatServer::BroadcastUserList(const std::string& roomName)
+{
+    // USER_LIST:<roomName> : name1, name2, ...
+    if (!isRunning || isShuttingDown) return;
+
+    std::string list = "USER_LIST:" + roomName + ":";
+    std::vector<SOCKET> targets;
+
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+
+        auto it = roomList.find(roomName);
+        if (it == roomList.end()) return;
+
+        for (SOCKET s : it->second)
+        {
+            if (clientNames.count(s))
+            {
+                list += clientNames[s] + ",";
+                targets.push_back(s);
+            }
+        }
+    }
+
+    if (!list.empty() && list.back() == ',')
+        list.pop_back();
+
+    for (SOCKET s : targets)
+    {
+        send(s, list.c_str(), list.size(), 0);
+    }
+    //std::string list = "USER_LIST:";
+    //std::vector<SOCKET> invalidSockets;
+
+    //{
+    //    std::lock_guard<std::mutex> lock(clientMutex);
+    //    if (clients.empty()) return;  // ✅ 클라이언트가 없으면 아무것도 안 함
+
+    //    for (const auto& [sock, name] : clientNames)
+    //    {
+    //        if (name.empty()) {
+    //            invalidSockets.push_back(sock);
+    //        }
+    //        else {
+    //            list += name + ",";
+    //        }
+    //    }
+
+    //    for (SOCKET s : invalidSockets) 
+    //    {
+    //        clientNames.erase(s);
+    //        clients.erase(std::remove(clients.begin(), clients.end(), s), clients.end());
+    //        closesocket(s);
+    //    }
+    //}
+
+    //if (!list.empty()) {
+    //    Broadcast(list); // isRunning은 Broadcast에서도 확인하도록
+    //}
+}
+
+void ChatServer::BroadcastToRoom(const std::string& roomId, const std::string& message, SOCKET exclude)
+{
+    if (!isRunning) return;
+
+    std::vector<SOCKET> socketsToSend;
+
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+        auto it = roomList.find(roomId);
+        if (it != roomList.end()) 
+        {
+            for (SOCKET s : it->second)
+                socketsToSend.push_back(s);
+        }
+    }
+
+    for (SOCKET s : socketsToSend)
+        send(s, message.c_str(), message.size(), 0);
+}
+
