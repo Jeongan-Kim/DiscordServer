@@ -37,11 +37,11 @@ ChatServer::ChatServer()
 
 ChatServer::~ChatServer() 
 {
-    Stop();
-    WSACleanup();
+Stop();
+WSACleanup();
 }
 
-bool ChatServer::Start(int port) 
+bool ChatServer::Start(int port)
 {
     listenSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (listenSocket == INVALID_SOCKET) return false;
@@ -58,44 +58,47 @@ bool ChatServer::Start(int port)
     std::thread(&ChatServer::AcceptClients, this).detach();
 
     // UDP 브로드캐스트 리스너 실행(클라이언트가 LAN 내에서 서버를 자동으로 찾을 수 있도록 도와주는 역할)
-    std::thread([=]() 
+    std::thread([=]()
         {
-        SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
-        if (udpSocket == INVALID_SOCKET) return;
+            SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
+            if (udpSocket == INVALID_SOCKET) return;
 
-        sockaddr_in recvAddr = {};
-        recvAddr.sin_family = AF_INET;
-        recvAddr.sin_addr.s_addr = INADDR_ANY;
-        recvAddr.sin_port = htons(50505); // 50505번 포트에서 UDP 수신 소켓을 열고 서버를 찾는 클라이언트를 기다림
+            sockaddr_in recvAddr = {};
+            recvAddr.sin_family = AF_INET;
+            recvAddr.sin_addr.s_addr = INADDR_ANY;
+            recvAddr.sin_port = htons(50505); // 50505번 포트에서 UDP 수신 소켓을 열고 서버를 찾는 클라이언트를 기다림
 
-        if (bind(udpSocket, (sockaddr*)&recvAddr, sizeof(recvAddr)) == SOCKET_ERROR) 
-        {
-            closesocket(udpSocket);
-            return;
-        }
+            if (bind(udpSocket, (sockaddr*)&recvAddr, sizeof(recvAddr)) == SOCKET_ERROR)
+            {
+                closesocket(udpSocket);
+                return;
+            }
 
-        char buffer[512];
-        sockaddr_in senderAddr;
-        int senderSize = sizeof(senderAddr);
+            char buffer[512];
+            sockaddr_in senderAddr;
+            int senderSize = sizeof(senderAddr);
 
-        while (isRunning) 
-        {
-            int len = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0, (sockaddr*)&senderAddr, &senderSize);
-            if (len > 0) {
-                buffer[len] = '\0';
-                if (std::string(buffer) == "DISCOVER_SERVER")  //클라이언트로부터 메시지를 받으면
-                {
-                    std::string response = "SERVER_HERE"; // 서버가 열려있다고 알려줌
-                    sendto(udpSocket, response.c_str(), response.size(), 0, (sockaddr*)&senderAddr, sizeof(senderAddr));
+            while (isRunning)
+            {
+                int len = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0, (sockaddr*)&senderAddr, &senderSize);
+                if (len > 0) {
+                    buffer[len] = '\0';
+                    if (std::string(buffer) == "DISCOVER_SERVER")  //클라이언트로부터 메시지를 받으면
+                    {
+                        std::string response = "SERVER_HERE"; // 서버가 열려있다고 알려줌
+                        sendto(udpSocket, response.c_str(), response.size(), 0, (sockaddr*)&senderAddr, sizeof(senderAddr));
+                    }
                 }
             }
-        }
 
-        closesocket(udpSocket);
+            closesocket(udpSocket);
         }).detach();
 
-    std::cout << "서버가 실행되었습니다. 포트: " << port << "\n";
-    return true;
+        std::cout << "서버가 실행되었습니다. 포트: " << port << "\n";
+
+        LoadUserDBFromFile("userDB.txt");
+
+        return true;
 }
 
 void ChatServer::Stop() {
@@ -120,57 +123,147 @@ void ChatServer::AcceptClients() {
     }
 }
 
-void ChatServer::HandleClient(SOCKET clientSocket) {
+void ChatServer::HandleClient(SOCKET clientSocket)
+{
+    bool isLogined = false;
+    std::string id, pw;
+
     char buffer[1024];
-    int bytes;
+    int bytes;    
 
-    // 처음 메시지는 LOGIN:<id>:<pw> 형식으로 오므로 파싱 필요
-    bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-    if (bytes <= 0) return;
-    buffer[bytes] = '\0';
-    std::string firstMessage = Trim(std::string(buffer)); // LOGIN:<id>:<pw> 형식
-    std::string id;
 
-    if (firstMessage.starts_with("LOGIN:"))
+    while (!isLogined && (bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0)) > 0)
     {
-        // 임시로 ID를 닉네임으로 설정 (예: LOGIN:myid:mypw)
-        size_t firstColon = firstMessage.find(":");
-        size_t secondColon = firstMessage.find(":", firstColon + 1);
-        if (firstColon != std::string::npos && secondColon != std::string::npos)
-        {
-            id = firstMessage.substr(firstColon + 1, secondColon - firstColon - 1);
-        }
-        else
-        {
-            id = "알 수 없음";
-        }
+        buffer[bytes] = '\0';
+        std::string firstMessage = Trim(std::string(buffer)); // LOGIN:<id>:<pw> 형식
+        std::cout << "[서버] 수신 메시지: "  << firstMessage << std::endl;
 
+        if (firstMessage.starts_with("REGISTER:"))
         {
-            std::lock_guard<std::mutex> lock(clientMutex);
-            clientNames[clientSocket] = id;
+            size_t firstColon = firstMessage.find(":");
+            size_t secondColon = firstMessage.find(":", firstColon + 1);
+            if (firstColon != std::string::npos && secondColon != std::string::npos)
+            {
+                std::string regID = Trim(firstMessage.substr(firstColon + 1, secondColon - firstColon - 1));
+                std::string regPW = Trim(firstMessage.substr(secondColon + 1));
+
+                std::cout << "regID : " << regID << std::endl;
+                std::cout << "regPW : " << regPW << std::endl;
+
+                // 아이디/비밀번호 비어있는 경우 체크!
+                if (regID.empty() || regPW.empty())
+                {
+                    std::string response = "REGISTER_FAIL";
+                    send(clientSocket, response.c_str(), response.size(), 0);
+                    continue;
+                }
+                else 
+                {
+                    std::lock_guard<std::mutex> lock(userDataMutex);
+                    if (userDB.count(regID) == 0)
+                    {
+                        userDB[regID] = regPW;
+
+                        std::string response = "REGISTER_OK";
+                        std::cout << "REGISTER_OK" << std::endl;
+
+                        send(clientSocket, response.c_str(), response.size(), 0);
+
+                        SaveUserDBToFile("userDB.txt"); // ← UserDB 저장!
+                    }
+                    else
+                    {
+                        std::string response = "REGISTER_FAIL";
+                        send(clientSocket, response.c_str(), response.size(), 0);
+                    }
+                }                
+            }
         }
+        else if (firstMessage.starts_with("LOGIN:"))
+        {
+            size_t firstColon = firstMessage.find(":");
+            size_t secondColon = firstMessage.find(":", firstColon + 1);
 
-        std::cout << "[서버] 로그인 처리됨: " << id << std::endl;
+            LoginResult loginResult = LoginResult::LOGIN_FORMAT_ERROR; // 로그인 결과 메시지 기본 설정
 
-        // 로그인 성공 응답 전송(서버->클라이언트)
-        std::string response = "LOGIN_SUCCESS";
-        send(clientSocket, response.c_str(), response.size(), 0);
+            if (firstColon != std::string::npos && secondColon != std::string::npos)
+            {
+                std::cout << "로그인 정보 체크 시작" << std::endl;
+                id = Trim(firstMessage.substr(firstColon + 1, secondColon - firstColon - 1));
+                pw = Trim(firstMessage.substr(secondColon + 1));
+
+                std::cout << "입력된 ID: [" << id << "]" << std::endl;
+                std::cout << "입력된 PW: [" << pw << "]" << std::endl;
+
+
+                auto it = userDB.find(id);
+
+                if (it == userDB.end())
+                {
+                    loginResult = LoginResult::LOGIN_NO_ID;   // 등록된 아이디 없음
+                    std::cout << "등록된 아이디 없음" << std::endl;
+
+                }
+                else if (it->second != pw)
+                {
+                    std::cout << "저장된 PW: [" << it->second << "]" << std::endl;
+
+                    loginResult = LoginResult::LOGIN_WRONG_PW; // 아이디에 부합하는 PW 틀림
+                    std::cout << "아이디에 부합하는 PW 틀림" << std::endl;
+
+
+                }
+                else if (clientSocket == INVALID_SOCKET)
+                {
+                    loginResult = LoginResult::LOGIN_CONNECT_ERROR; // 서버 연결 끊김
+                }
+                else
+                {
+                    std::lock_guard<std::mutex> lock(clientMutex);
+                    if (std::find_if(clientNames.begin(), clientNames.end(), [&](const auto& pair) { return pair.second == id; }) != clientNames.end())
+                    {
+                        loginResult = LoginResult::LOGIN_ALREADY;       // 이미 로그인 중인 아이디
+                        std::cout << "이미 로그인 중인 아이디" << std::endl;
+
+                    }
+                    else
+                    {
+                        clientNames[clientSocket] = id;
+                        loginResult = LoginResult::LOGIN_SUCCESS;
+                        std::cout << "[서버] 로그인 처리됨: " << id << std::endl;
+                        isLogined = true;
+                    }
+                }
+            }
+
+            std::string response = ToString(loginResult);
+            send(clientSocket, response.c_str(), response.size(), 0);
+
+            if (!isLogined)
+            {
+                std::cout << "[서버] 로그인 실패, 재시도 가능\n";
+                continue; // 루프 계속
+            }
+
+            break;
+        }
     }
-    else
+
+    if (!isLogined)
     {
-        // 로그인 실패 응답 (형식이 이상하면)
-        std::string response = "LOGIN_FAIL";
-        send(clientSocket, response.c_str(), response.size(), 0);
         closesocket(clientSocket);
         return;
     }
 
+    std::cout << "[서버] 로그인 완료: " << clientNames[clientSocket] << std::endl;
+
     // 메시지 수신 루프
-    while ((bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0)) > 0) {
+    while ((bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0)) > 0) 
+    {
         buffer[bytes] = '\0';
 
         std::string trimmed = Trim(std::string(buffer));
-
+        
         std::cout << trimmed << std::endl;
 
         // __DISCONNECT__ 메시지는 브로드캐스트하지 않고 종료 처리
@@ -271,6 +364,73 @@ void ChatServer::HandleClient(SOCKET clientSocket) {
     closesocket(clientSocket);
 }
 
+void ChatServer::EnsureDirectoryExists(const std::string& filepath)
+{
+    std::error_code ec;
+    std::filesystem::path path(filepath);
+    auto dir = path.parent_path();
+
+    if (!dir.empty() && !std::filesystem::exists(dir, ec)) {
+        if (!std::filesystem::create_directories(dir, ec)) {
+            std::cerr << "[에러] 디렉토리 생성 실패: " << dir << "\n";
+            std::cerr << "  사유: " << ec.message() << std::endl;
+        }
+        else {
+            std::cout << "[서버] 디렉토리 생성 완료: " << dir << std::endl;
+        }
+    }
+}
+
+void ChatServer::SaveUserDBToFile(const std::string& filename)
+{
+    std::cout << "UserDB SAVE 시도" << "\n";
+
+    EnsureDirectoryExists(filename); 
+
+    std::ofstream ofs(filename);
+    if (!ofs.is_open())
+    {
+        std::cerr << "[에러] 파일을 열 수 없습니다: " << filename << std::endl;
+        perror("perror: ");
+        return;
+    }
+
+    for (const auto& [id, pw] : userDB)
+    {
+        ofs << id << ":" << pw << "\n";
+    }
+
+    std::cout << "UserDB SAVE 완료" << "\n";
+
+}
+
+void ChatServer::LoadUserDBFromFile(const std::string& filename)
+{
+    std::lock_guard<std::mutex> lock(userDataMutex);
+    std::ifstream ifs(filename);
+    if (!ifs.is_open())
+    {
+        std::cerr << "파일을 열 수 없습니다: " << filename << std::endl;
+        return;
+    }
+
+    std::string line;
+    while (std::getline(ifs, line))
+    {
+        size_t sep = line.find(":");
+        if (sep != std::string::npos)
+        {
+            std::string id = Trim(line.substr(0, sep));
+            std::string pw = Trim(line.substr(sep + 1));
+            if (!id.empty() && !pw.empty())
+                userDB[id] = pw;
+        }
+    }
+
+    std::cout << "UserDB LOAD 완료" << "\n";
+
+}
+
 void ChatServer::Broadcast(const std::string& message, SOCKET exclude)
 {
     if (!isRunning) return;
@@ -319,34 +479,6 @@ void ChatServer::BroadcastUserList(const std::string& roomName)
     {
         send(s, list.c_str(), list.size(), 0);
     }
-    //std::string list = "USER_LIST:";
-    //std::vector<SOCKET> invalidSockets;
-
-    //{
-    //    std::lock_guard<std::mutex> lock(clientMutex);
-    //    if (clients.empty()) return;  // ✅ 클라이언트가 없으면 아무것도 안 함
-
-    //    for (const auto& [sock, name] : clientNames)
-    //    {
-    //        if (name.empty()) {
-    //            invalidSockets.push_back(sock);
-    //        }
-    //        else {
-    //            list += name + ",";
-    //        }
-    //    }
-
-    //    for (SOCKET s : invalidSockets) 
-    //    {
-    //        clientNames.erase(s);
-    //        clients.erase(std::remove(clients.begin(), clients.end(), s), clients.end());
-    //        closesocket(s);
-    //    }
-    //}
-
-    //if (!list.empty()) {
-    //    Broadcast(list); // isRunning은 Broadcast에서도 확인하도록
-    //}
 }
 
 void ChatServer::BroadcastToRoom(const std::string& roomId, const std::string& message, SOCKET exclude)
