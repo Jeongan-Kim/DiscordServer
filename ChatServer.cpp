@@ -299,6 +299,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
             BroadcastToRoom(roomName, joinMessage, INVALID_SOCKET);
             BroadcastUserList(roomName); // 채팅방 참여했을 때 참여자 리스트 업데이트
+            BroadcastVoiceListUpdate(roomName);
             continue;  // 다음 루프로 넘어감
         }
 
@@ -318,7 +319,37 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
             BroadcastToRoom(roomName, leaveMessage, INVALID_SOCKET);
             BroadcastUserList(roomName);
+            //BroadcastVoiceListUpdate(roomName);
             continue;
+        }
+
+        // 음성채널 참가 처리
+        if (trimmed.starts_with("VOICE_JOIN:"))
+        {
+            std::string trim = trimmed.substr(std::string("VOICE_JOIN:").length());
+            size_t p1 = trim.find(':');
+            if (p1 == std::string::npos) return;
+
+            std::string roomId = trim.substr(0, p1); //방 ID
+            std::string sender = trim.substr(p1 + 1); // clientId
+
+            voiceRooms[roomId].insert(clientSocket);
+            BroadcastVoiceListUpdate(roomId, sender);
+        }
+
+        // 음성채널 퇴장 처리
+        if (trimmed.starts_with("VOICE_LEAVE:"))
+        {
+            std::string trim = trimmed.substr(std::string("VOICE_LEAVE:").length());
+
+            size_t p1 = trim.find(':');
+            if (p1 == std::string::npos) return;
+
+            std::string roomId = trim.substr(0, p1); //방 ID
+            std::string sender = trim.substr(p1 + 1); // clientId
+
+            BroadcastVoiceListUpdate(roomId, sender, false);
+            //voiceRooms[roomId].erase(clientSocket);
         }
 
         // 일반 채팅 메시지 처리
@@ -444,8 +475,10 @@ void ChatServer::Broadcast(const std::string& message, SOCKET exclude)
             if (s != exclude) socketsToSend.push_back(s);
     }
 
+    std::string toSend = message + "\n";
+
     for (SOCKET s : socketsToSend)
-        send(s, message.c_str(), message.size(), 0);  
+        send(s, toSend.c_str(), toSend.size(), 0);
 }
 
 void ChatServer::BroadcastUserList(const std::string& roomName)
@@ -475,9 +508,44 @@ void ChatServer::BroadcastUserList(const std::string& roomName)
     if (!list.empty() && list.back() == ',')
         list.pop_back();
 
+    list += "\n";
+
     for (SOCKET s : targets)
     {
         send(s, list.c_str(), list.size(), 0);
+    }
+}
+
+void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std::string& sender, bool isJoin)
+{
+    if (!isRunning || isShuttingDown) return;
+
+    std::string list = "VOICE_LIST:" + roomName + ":";
+
+    for (SOCKET sock : voiceRooms[roomName]) 
+    {
+
+        if (!isJoin && clientNames[sock] == sender)
+        {
+            voiceRooms[roomName].erase(sock);
+            continue;// 나간 사용자 제외
+        }
+             
+
+        list += clientNames[sock] + ",";
+    }
+
+    if (!voiceRooms[roomName].empty() && list.back() == ',')
+        list.pop_back(); // 마지막 콤마 제거
+
+    list += "\n";
+
+
+    // 채팅방에 있는 모든 사람에게 브로드캐스트
+    for (SOCKET sock : roomList[roomName])
+    {
+        send(sock, list.c_str(), list.length(), 0);
+        std::cout << "[VOICE_LIST to " << clientNames[sock] << "] " << list << std::endl;
     }
 }
 
@@ -496,8 +564,9 @@ void ChatServer::BroadcastToRoom(const std::string& roomId, const std::string& m
                 socketsToSend.push_back(s);
         }
     }
+    std::string toSend = message + "\n";
 
     for (SOCKET s : socketsToSend)
-        send(s, message.c_str(), message.size(), 0);
+        send(s, toSend.c_str(), toSend.size(), 0);
 }
 
