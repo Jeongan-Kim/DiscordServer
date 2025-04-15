@@ -50,6 +50,8 @@ private:
     void SaveUserDBToFile(const std::string& filename);
     void LoadUserDBFromFile(const std::string& filename);
 
+    void BroadcastRoomsInfoMSG();
+
     void Broadcast(const std::string& message, SOCKET excludeSocket = INVALID_SOCKET); // 전체 공지사항 보낼 시
     void BroadcastUserList(const std::string& roomName); // 채팅방 이름을 인자로 받아 해당 방에만 리스트를 보내는 함수
     void BroadcastVoiceListUpdate(const std::string& roomName, const std::string& sender = "", bool isJoin = true); // 방 전체에 채팅 참가자 ID 목록을 전송하는 함수
@@ -69,6 +71,7 @@ private:
     std::unordered_map<SOCKET, std::string> clientNames;            //소켓 -> 닉네임
     std::unordered_map<SOCKET, std::set<std::string>> clientRooms;  //소켓 -> 참가중인 방들   
     std::unordered_map<std::string, std::set<SOCKET>> roomList;     //방 이름 -> 참가중인 소켓들
+    std::unordered_map<std::string, std::string> roomsInfo;           //방 이름 -> 방 비밀번호 
 
     std::unordered_map<std::string, std::set<SOCKET>> voiceRooms;           //roomId->해당 room의 voice채널에 참여중인 클라이언트
 };

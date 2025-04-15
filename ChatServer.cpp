@@ -272,12 +272,46 @@ void ChatServer::HandleClient(SOCKET clientSocket)
             break;
         }
 
+        // 채팅방 목록 요청 처리
+        if (trimmed.starts_with("ROOMLIST_REFRESH"))
+        {
+            std::cout << "클라이언트에서 RoomsInfo 요청함" << std::endl;
+            // roomsInfo 텍스팅해서 클라이언트에 보내기
+            BroadcastRoomsInfoMSG();
+            continue;
+        }
+
         // 채팅방 생성 처리
         if (trimmed.starts_with("CREATE_ROOM:"))
         {
-            std::string roomName = trimmed.substr(strlen("CREATE_ROOM:"));
-            std::lock_guard<std::mutex> lock(clientMutex);
-            roomList[roomName];
+            std::string msg = trimmed.substr(strlen("CREATE_ROOM:"));
+
+            if (msg.starts_with("PASSWORD_TRUE:"))
+            {
+                std::string roomInfo = msg.substr(strlen("PASSWORD_TRUE:"));
+
+
+                size_t p1 = roomInfo.find(':');
+                if (p1 == std::string::npos) return;
+
+                std::string roomName = roomInfo.substr(0, p1); //방 ID
+                std::string password = roomInfo.substr(p1 + 1); // Password
+
+                std::lock_guard<std::mutex> lock(clientMutex);
+                roomList[roomName];
+                roomsInfo[roomName] = password;
+            }
+            else if (msg.starts_with("PASSWORD_FALSE:"))
+            {
+                std::string roomName = msg.substr(strlen("PASSWORD_FALSE:"));
+
+                std::string password = ""; // Password 없음
+
+                std::lock_guard<std::mutex> lock(clientMutex);
+                roomList[roomName];
+                roomsInfo[roomName] = password;
+            }
+
             continue;
         }
 
@@ -459,6 +493,36 @@ void ChatServer::LoadUserDBFromFile(const std::string& filename)
     }
 
     std::cout << "UserDB LOAD 완료" << "\n";
+
+}
+
+void ChatServer::BroadcastRoomsInfoMSG()
+{
+    // ROOMS_INFO:roomName:password:roomName:password 형식
+    std::cout << "RoomsInfo 텍스팅 시작" << std::endl;
+    std::string msg = "ROOMS_INFO:";
+    for (const auto& roomInfo : roomsInfo)
+    {
+        std::string roomName = roomInfo.first;
+        std::string roomPassword = roomInfo.second;
+
+        msg += roomName + ":" + roomPassword + ":";
+    }
+
+    if (!(msg == ("ROOMS_INFO:"))) 
+    {
+        msg.pop_back(); // 맨 끝 : 제거
+    }
+
+    std::string toSend = msg + "\n";
+    Broadcast(toSend);
+    //std::lock_guard<std::mutex> lock(clientMutex);
+    //for (auto client : clientNames)
+    //{
+    //    send(client.first, msg.c_str(), msg.size(), 0);
+    //}
+
+    std::cout << msg << std::endl;
 
 }
 
