@@ -311,7 +311,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
                 roomList[roomName];
                 roomsInfo[roomName] = password;
             }
-
+            BroadcastRoomsInfoMSG();
             continue;
         }
 
