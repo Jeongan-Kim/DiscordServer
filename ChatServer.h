@@ -1,4 +1,5 @@
 #pragma once
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <winsock2.h>
 #include <vector>
 #include <thread>
@@ -18,6 +19,13 @@ enum class LoginResult {
     LOGIN_CONNECT_ERROR,
     LOGIN_ALREADY,
     LOGIN_ERROR
+};
+
+struct VoiceStatus
+{
+    bool micStatus = true;
+    bool headsetStatus = true; 
+    sockaddr_in udpEp;  // 클라이언트의 IP, UDP 포트
 };
 
 // 문자열로 변환 (서버가 클라이언트로 보낼 때 사용)
@@ -45,6 +53,8 @@ public:
 private:
     void AcceptClients();
     void HandleClient(SOCKET clientSocket);
+
+    void HandleClientAudio();
 
     void EnsureDirectoryExists(const std::string& filepath); // 상위 디렉토리가 존재하지 않으면 폴더를 만들어줌
     void SaveUserDBToFile(const std::string& filename);
@@ -74,4 +84,6 @@ private:
     std::unordered_map<std::string, std::string> roomsInfo;           //방 이름 -> 방 비밀번호 
 
     std::unordered_map<std::string, std::set<SOCKET>> voiceRooms;           //roomId->해당 room의 voice채널에 참여중인 클라이언트
+    //std::unordered_map<std::string, std::vector<sockaddr_in>> voiceEndpoints;  //roomId->UDP 엔드포인트(클라이언트 IP + UDP 포트)   -> 오디오 패키지를 보내려면 Socket 값만으로는 안되서 만든 자료구조
+    std::unordered_map<std::string, std::unordered_map<std::string, VoiceStatus>> voiceEndpoints;  //roomId->(clientID -> UDP 엔드포인트(클라이언트 IP + UDP 포트) )  -> 오디오 패키지를 보내려면 Socket 값만으로는 안되서 만든 자료구조
 };

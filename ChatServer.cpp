@@ -9,6 +9,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 
+
 std::string Trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \r\n\t");
     if (first == std::string::npos) return "";
@@ -29,6 +30,7 @@ std::string GetFormattedCurrentTime()
     return oss.str();
 }
 
+
 ChatServer::ChatServer() 
 {
     WSADATA wsaData;
@@ -37,8 +39,8 @@ ChatServer::ChatServer()
 
 ChatServer::~ChatServer() 
 {
-Stop();
-WSACleanup();
+    Stop();
+    WSACleanup();
 }
 
 bool ChatServer::Start(int port)
@@ -98,6 +100,7 @@ bool ChatServer::Start(int port)
 
         LoadUserDBFromFile("userDB.txt");
 
+        HandleClientAudio(); // 오디오 송수신 시작
         return true;
 }
 
@@ -368,6 +371,21 @@ void ChatServer::HandleClient(SOCKET clientSocket)
             std::string sender = trim.substr(p1 + 1); // clientId
 
             voiceRooms[roomId].insert(clientSocket);
+
+            // UDP 엔드포인트 맵에도 저장
+            // 1) peer 주소 얻기
+            sockaddr_in peer{};
+            int len = sizeof(peer);
+            getpeername(clientSocket, (sockaddr*)&peer, &len);
+
+            // 2) UDP 엔드포인트 세팅
+            sockaddr_in udpAddr{};
+            udpAddr.sin_family = AF_INET;
+            udpAddr.sin_addr = peer.sin_addr;      // same IP
+            udpAddr.sin_port = htons(50506);       // UDP 청취 포트
+
+            voiceEndpoints[roomId][sender] = VoiceStatus{ true, true, udpAddr };
+
             BroadcastVoiceListUpdate(roomId, sender);
         }
 
@@ -384,6 +402,42 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
             BroadcastVoiceListUpdate(roomId, sender, false);
             //voiceRooms[roomId].erase(clientSocket);
+        }
+
+        // 마이크 메시지 수신
+        // "VOICE_MIC:roomId:client1,1"
+        if (trimmed.starts_with("VOICE_MIC:"))
+        {
+            std::string trim = trimmed.substr(std::string("VOICE_MIC:").length());
+
+            size_t p1 = trim.find(':');
+            size_t p2 = trim.find(',', p1 + 1); // ',' 위치
+            
+            if (p1 == std::string::npos || p2 == std::string::npos) return;  // 형식 오류 무시
+            std::string roomId = trim.substr(0, p1); // 방 ID
+            std::string clientId = trim.substr(p1 + 1, p2 - p1 - 1);
+            std::string micStatus = trim.substr(p2 + 1);
+
+            voiceEndpoints[roomId][clientId].micStatus = (micStatus == "1");
+            BroadcastVoiceListUpdate(roomId);
+        }
+
+        // 헤드셋 메시지 수신
+        // "VOICE_HEADSET:roomId:client1,1"
+        if (trimmed.starts_with("VOICE_HEADSET:"))
+        {
+            std::string trim = trimmed.substr(std::string("VOICE_HEADSET:").length());
+
+            size_t p1 = trim.find(':');
+            size_t p2 = trim.find(',', p1 + 1); // ',' 위치
+
+            if (p1 == std::string::npos || p2 == std::string::npos) return;  // 형식 오류 무시
+            std::string roomId = trim.substr(0, p1); // 방 ID
+            std::string clientId = trim.substr(p1 + 1, p2 - p1 - 1);
+            std::string headsetStatus = trim.substr(p2 + 1);
+
+            voiceEndpoints[roomId][clientId].headsetStatus = (headsetStatus == "1");
+            BroadcastVoiceListUpdate(roomId);
         }
 
         // 일반 채팅 메시지 처리
@@ -427,6 +481,99 @@ void ChatServer::HandleClient(SOCKET clientSocket)
     }
 
     closesocket(clientSocket);
+}
+
+void ChatServer::HandleClientAudio()
+{
+    OutputDebugStringA("[AudioRelay] HandleClientAudio() called\n");
+
+    std::thread([this]() 
+        {
+            OutputDebugStringA("[AudioRelay] Thread entry\n");
+        SOCKET udpAudio = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udpAudio == INVALID_SOCKET) {
+            std::cerr << "[AudioRelay] socket() failed: " << WSAGetLastError() << "\n";
+            return;
+        }
+
+        BOOL reuse = TRUE;
+        setsockopt(udpAudio, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse));
+
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(50507);    // 클라이언트가 보내는 오디오 포트
+        //bind(udpAudio, (sockaddr*)&addr, sizeof(addr));
+
+        if (bind(udpAudio, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            std::cerr << "[AudioRelay] bind(50507) failed: "
+                << WSAGetLastError() << "\n";
+            closesocket(udpAudio);
+            return;
+        }
+
+        char audioBuf[65507]; // UDP 최대 유효 데이터 크기
+        sockaddr_in from{};
+        int fromLen = sizeof(from);
+
+        while (this->isRunning)
+        {
+            int rec = recvfrom(udpAudio, audioBuf, sizeof(audioBuf), 0,
+                (sockaddr*)&from, &fromLen);
+            //if (rec <= 0) continue;
+            if (rec == SOCKET_ERROR)
+            {
+                int err = WSAGetLastError();
+                if (err == WSAEWOULDBLOCK)
+                {
+                    // 아직 패킷 없음
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                else
+                {
+                    char buf[128];
+                    _snprintf_s(buf, sizeof(buf),
+                        "[AudioRelay] recvfrom error: %d\n", err);
+                    OutputDebugStringA(buf);
+                    break;
+                }
+            }
+            if (rec == 0)
+            {
+                OutputDebugStringA("[AudioRelay] recvfrom returned 0\n");
+                continue;
+            }
+
+            // 헤더 파싱
+            //    예: buffer가 "AUDIO:room1:<pcm>" 라면
+            std::string msg(audioBuf, audioBuf + rec);
+            if (!msg.starts_with("AUDIO:")) continue;
+            size_t p1 = msg.find(':', 6);
+
+            std::string roomId = msg.substr(6, p1 - 6);
+            const char* audioData = audioBuf + p1 + 1; // 실제 음성 메시지 PCM 데이터 위치
+            int audioLen = rec - (p1 + 1);
+
+            // 브로드캐스트
+            for (auto& ep : this->voiceEndpoints[roomId])
+            {
+                // 자기 자신 제외
+                //if (ep.sin_addr.s_addr == from.sin_addr.s_addr &&
+                //    ep.sin_port == from.sin_port)
+                //    continue;
+                //std::cout << "[AudioRelay] send " << audioLen << " bytes to " << inet_ntoa(ep.sin_addr) << ":" << ntohs(ep.sin_port) << "\n";
+
+                sendto(udpAudio,
+                    audioData,
+                    audioLen,
+                    0,
+                    (sockaddr*)&ep.second.udpEp,
+                    sizeof(ep.second.udpEp));
+            }
+        }
+        closesocket(udpAudio);
+        }).detach();
 }
 
 void ChatServer::EnsureDirectoryExists(const std::string& filepath)
@@ -586,18 +733,38 @@ void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std
 
     std::string list = "VOICE_LIST:" + roomName + ":";
 
-    for (SOCKET sock : voiceRooms[roomName]) 
+    // “VOICE_LIST:roomId:” 뒤에
+    // client1,mic,headset;client2,0,1;…
+
+    for (auto& [clientId, st] : voiceEndpoints[roomName])
     {
-
-        if (!isJoin && clientNames[sock] == sender)
-        {
-            voiceRooms[roomName].erase(sock);
-            continue;// 나간 사용자 제외
-        }
-             
-
-        list += clientNames[sock] + ",";
+        list += clientId + ",";
+        list += (st.micStatus ? "1" : "0") + std::string(",");
+        list += (st.headsetStatus ? "1" : "0") + std::string(";");
     }
+
+    //for (SOCKET sock : voiceRooms[roomName]) 
+    //{
+
+    //    if (!isJoin && clientNames[sock] == sender)
+    //    {
+    //        voiceRooms[roomName].erase(sock);
+
+    //        // UDP 엔드포인트도 지우기
+    //        sockaddr_in peer{};
+    //        int len = sizeof(peer);
+    //        getpeername(sock, (sockaddr*)&peer, &len);
+    //        sockaddr_in udpAddr = peer;
+    //        udpAddr.sin_port = htons(50506);
+    //        
+    //        voiceEndpoints[roomName].erase(sender);
+
+    //        continue;// 나간 사용자 제외
+    //    }
+    //         
+
+    //    list += clientNames[sock] + ",";
+    //}
 
     if (!voiceRooms[roomName].empty() && list.back() == ',')
         list.pop_back(); // 마지막 콤마 제거
