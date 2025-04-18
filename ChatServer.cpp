@@ -546,17 +546,22 @@ void ChatServer::HandleClientAudio()
             }
 
             // 헤더 파싱
-            //    예: buffer가 "AUDIO:room1:<pcm>" 라면
+            //    예: buffer가 "AUDIO:room1:sender:<pcm>" 라면
             std::string msg(audioBuf, audioBuf + rec);
             if (!msg.starts_with("AUDIO:")) continue;
-            size_t p1 = msg.find(':', 6);
+            size_t p1 = msg.find(':', 6);   // roomId
+            size_t p2 = msg.find(':', p1 + 1); //sender
+
+            if (p1 == std::string::npos || p2 == std::string::npos) continue;
 
             std::string roomId = msg.substr(6, p1 - 6);
-            const char* audioData = audioBuf + p1 + 1; // 실제 음성 메시지 PCM 데이터 위치
-            int audioLen = rec - (p1 + 1);
+            std::string sender = msg.substr(p1 + 1, p2 - p1 - 1);
+
+            const char* audioData = audioBuf + p1 + 1; // (여기)sender:실제 음성 메시지 PCM 데이터 위치
+            int audioLen = rec - (int)(p1 + 1);
 
             // 브로드캐스트
-            for (auto& ep : this->voiceEndpoints[roomId])
+            for (auto& [clientId, st] : voiceEndpoints[roomId])
             {
                 // 자기 자신 제외
                 //if (ep.sin_addr.s_addr == from.sin_addr.s_addr &&
@@ -568,8 +573,8 @@ void ChatServer::HandleClientAudio()
                     audioData,
                     audioLen,
                     0,
-                    (sockaddr*)&ep.second.udpEp,
-                    sizeof(ep.second.udpEp));
+                    reinterpret_cast<sockaddr*>(&st.udpEp),
+                    sizeof(st.udpEp));
             }
         }
         closesocket(udpAudio);
@@ -738,6 +743,8 @@ void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std
 
     for (auto& [clientId, st] : voiceEndpoints[roomName])
     {
+        if (!isJoin && clientId == sender)
+            continue;
         list += clientId + ",";
         list += (st.micStatus ? "1" : "0") + std::string(",");
         list += (st.headsetStatus ? "1" : "0") + std::string(";");
@@ -750,7 +757,7 @@ void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std
     //    {
     //        voiceRooms[roomName].erase(sock);
 
-    //        // UDP 엔드포인트도 지우기
+    //         UDP 엔드포인트도 지우기
     //        sockaddr_in peer{};
     //        int len = sizeof(peer);
     //        getpeername(sock, (sockaddr*)&peer, &len);
@@ -766,8 +773,8 @@ void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std
     //    list += clientNames[sock] + ",";
     //}
 
-    if (!voiceRooms[roomName].empty() && list.back() == ',')
-        list.pop_back(); // 마지막 콤마 제거
+    if (!voiceEndpoints[roomName].empty())
+        list.pop_back(); // 마지막 세미콜론 제거
 
     list += "\n";
 
@@ -775,8 +782,26 @@ void ChatServer::BroadcastVoiceListUpdate(const std::string& roomName, const std
     // 채팅방에 있는 모든 사람에게 브로드캐스트
     for (SOCKET sock : roomList[roomName])
     {
-        send(sock, list.c_str(), list.length(), 0);
+        send(sock, list.c_str(), list.size(), 0);
         std::cout << "[VOICE_LIST to " << clientNames[sock] << "] " << list << std::endl;
+    }
+
+    // (leave 이벤트일 때만) 맵에서 실제로 제거
+    if (!isJoin)
+    {
+        // voiceEndpoints에서 제거
+        voiceEndpoints[roomName].erase(sender);
+
+        // voiceRooms에서 SOCKET 단위로 제거
+        // clientNames: SOCKET→clientId 맵을 뒤져서 제거할 SOCKET 찾기
+        for (auto it = clientNames.begin(); it != clientNames.end(); ++it)
+        {
+            if (it->second == sender)
+            {
+                voiceRooms[roomName].erase(it->first);
+                break;
+            }
+        }
     }
 }
 
