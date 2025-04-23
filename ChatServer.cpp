@@ -8,7 +8,15 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+enum RecvState { READ_HEADER, READ_PAYLOAD };
 
+struct ClientContext {
+    RecvState state = READ_HEADER;
+    std::string headerBuf;
+    std::vector<char> payloadBuf;
+    size_t      bytesToRead = 0;
+    std::string roomId, sender, filename;
+};
 
 std::string Trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \r\n\t");
@@ -96,6 +104,8 @@ bool ChatServer::Start(int port)
             closesocket(udpSocket);
         }).detach();
 
+        StartFileTransgerListrener();
+
         std::cout << "서버가 실행되었습니다. 포트: " << port << "\n";
 
         LoadUserDBFromFile("userDB.txt");
@@ -124,6 +134,70 @@ void ChatServer::AcceptClients() {
             std::thread(&ChatServer::HandleClient, this, client).detach();
         }
     }
+}
+
+void ChatServer::StartFileTransgerListrener()
+{
+    std::thread([this]() {
+        SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(9001);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        bind(listenSock, (sockaddr*)&addr, sizeof(addr));
+        listen(listenSock, SOMAXCONN);
+
+        while (true) {
+            sockaddr_in clientAddr;
+            int len = sizeof(clientAddr);
+            SOCKET clientSock = accept(listenSock,
+                (sockaddr*)&clientAddr, &len);
+            // 클라이언트당 스레드 분기
+            std::thread(&ChatServer::HandleFileUpload, this, clientSock).detach();
+        }
+        }).detach();
+}
+
+void ChatServer::HandleFileUpload(SOCKET clientSocket)
+{
+    // 1) 헤더 읽기 ('\n' 구분자까지)
+    std::string header;
+    char ch;
+    while (recv(clientSocket, &ch, 1, 0) == 1) {
+        if (ch == '\n') break;
+        header.push_back(ch);
+    }
+    // header 예: FILE:roomId:sender:filename:filesize
+    // 파싱
+    if (!header.rfind("FILE:", 0)) {
+        std::string trim = header.substr(5);
+        size_t p1 = trim.find(':');
+        size_t p2 = trim.find(':', p1 + 1);
+        size_t p3 = trim.find(':', p2 + 1);
+        std::string roomId = trim.substr(0, p1);
+        std::string sender = trim.substr(p1 + 1, p2 - p1 - 1);
+        std::string filename = trim.substr(p2 + 1, p3 - p2 - 1);
+        size_t filesize = std::stoull(trim.substr(p3 + 1));
+
+        // 2) 파일 본문 수신
+        std::vector<char> data;
+        data.reserve(filesize);
+        size_t received = 0;
+        const size_t BUF_SIZE = 8192;
+        std::vector<char> buf(BUF_SIZE);
+        while (received < filesize) 
+        {
+            int n = recv(clientSocket, buf.data(), std::min(BUF_SIZE, filesize - received),0);
+            if (n <= 0) break;
+            data.insert(data.end(), buf.data(), buf.data() + n);
+            received += n;
+        }
+
+        // 3) 브로드캐스트 (기존 BroadcastFileToOthers 재활용)
+        BroadcastFileToRoom(roomId, sender, filename, data);
+    }
+
+    closesocket(clientSocket);
 }
 
 void ChatServer::HandleClient(SOCKET clientSocket)
@@ -439,6 +513,22 @@ void ChatServer::HandleClient(SOCKET clientSocket)
             voiceEndpoints[roomId][clientId].headsetStatus = (headsetStatus == "1");
             BroadcastVoiceListUpdate(roomId);
         }
+
+        ////파일 수신
+        //if (trimmed.starts_with("FILE:"))
+        //{
+        //    std::string trim = trimmed.substr(std::string("FILE:").length());
+
+        //    size_t p1 = trim.find(":"); // roomId 뒤
+        //    size_t p2 = trim.find(":", p1 + 1); // sender 뒤
+        //    size_t p3 = trim.find(":", p2 + 1); //파일이름.확장자 뒤
+
+        //    if (p1 == std::string::npos || p2 == std::string::npos || p3 == std::string::npos) return;
+        //    std::string roomId = trim.substr(0, p1);
+        //    std::string sender = trim.substr(p1 + 1, p2 - p1 - 1);
+        //    std::string filename = trim.substr(p2 + 1, p3 - p2 - 1);
+        //    std::string filesize = trim.substr(p3 + 1);
+        //}
 
         // 일반 채팅 메시지 처리
         size_t p1 = trimmed.find(':'); // 첫 번째 ':' 위치
@@ -824,5 +914,41 @@ void ChatServer::BroadcastToRoom(const std::string& roomId, const std::string& m
 
     for (SOCKET s : socketsToSend)
         send(s, toSend.c_str(), toSend.size(), 0);
+}
+
+void ChatServer::BroadcastFileToRoom(const std::string& roomId, const std::string& sender, const std::string& filename, std::vector<char> data)
+{
+    if (!isRunning) return;
+
+    std::vector<SOCKET> socketsToSend;
+
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+        auto it = roomList.find(roomId);
+        if (it != roomList.end())
+        {
+            for (SOCKET s : it->second)
+                socketsToSend.push_back(s);
+        }
+    }
+    std::string time = GetFormattedCurrentTime();
+    std::string header = "FILE:" + roomId + ":" + time + ":" + sender + ":" + filename + ":" + std::to_string(data.size()) + "\n";
+
+    // 모든 소켓에 헤더 전송
+    for (SOCKET s : socketsToSend)
+        send(s, header.c_str(), header.size(), 0);
+
+    // 4) 페이로드(바이너리) 전송
+    //    여기서는 data 전체를 한 번에 보내지만,
+    //    큰 파일은 chunk 단위로 잘라서 send 해 주셔도 됩니다.
+    for (SOCKET s : socketsToSend) {
+        size_t total = 0, toSend = data.size();
+        const char* ptr = data.data();
+        while (total < toSend) {
+            int sent = send(s, ptr + total, toSend - total, 0);
+            if (sent <= 0) break;  // 에러 처리
+            total += sent;
+        }
+    }
 }
 

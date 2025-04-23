@@ -1,5 +1,6 @@
 #pragma once
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define NOMINMAX
 #include <winsock2.h>
 #include <vector>
 #include <thread>
@@ -52,6 +53,8 @@ public:
 
 private:
     void AcceptClients();
+    void StartFileTransgerListrener();
+    void HandleFileUpload(SOCKET clientSocket);
     void HandleClient(SOCKET clientSocket);
 
     void HandleClientAudio();
@@ -66,7 +69,7 @@ private:
     void BroadcastUserList(const std::string& roomName); // 채팅방 이름을 인자로 받아 해당 방에만 리스트를 보내는 함수
     void BroadcastVoiceListUpdate(const std::string& roomName, const std::string& sender = "", bool isJoin = true); // 방 전체에 채팅 참가자 ID 목록을 전송하는 함수
     void BroadcastToRoom(const std::string& roomId, const std::string& message, SOCKET exclude); // 방 별로 채팅 메시지나 시스템 메시지 전송 시
-
+    void BroadcastFileToRoom(const std::string& roomId, const std::string& sender, const std::string& filename, std::vector<char> data);
     SOCKET listenSocket;
     std::vector<SOCKET> clients;
 
