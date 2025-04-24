@@ -9,7 +9,6 @@ typedef int            socklen_t;
 typedef SSIZE_T        ssize_t;
     #pragma comment(lib, "ws2_32.lib")
 #else
-#define _POSIX_C_SOURCE 200112L
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
