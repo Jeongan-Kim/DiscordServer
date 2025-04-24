@@ -170,7 +170,12 @@ void ChatServer::StartFileTransgerListrener()
             //SOCKET clientSock = accept(listenSock,
             //    (sockaddr*)&clientAddr, &len);
             socklen_t len = sizeof(clientAddr);
-            SOCKET client = accept(listenSock, (sockaddr*)&clientAddr, &len);
+            SOCKET client = accept(listenSock, (sockaddr*)&clientAddr,
+#ifdef _WIN32
+            & len);  // 윈도우의 socklen_t==int
+#else
+            & len);  // 리눅스의 socklen_t
+#endif
             // 클라이언트당 스레드 분기
             std::thread(&ChatServer::HandleFileUpload, this, client).detach();
         }
@@ -601,7 +606,7 @@ void ChatServer::HandleClientAudio()
             //OutputDebugStringA("[AudioRelay] Thread entry\n");
         SOCKET udpAudio = socket(AF_INET, SOCK_DGRAM, 0);
         if (udpAudio == INVALID_SOCKET) {
-            std::cerr << "[AudioRelay] socket() failed: " << WSAGetLastError() << "\n";
+            //std::cerr << "[AudioRelay] socket() failed: " << WSAGetLastError() << "\n";
             return;
         }
 
@@ -615,8 +620,7 @@ void ChatServer::HandleClientAudio()
         //bind(udpAudio, (sockaddr*)&addr, sizeof(addr));
 
         if (bind(udpAudio, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-            std::cerr << "[AudioRelay] bind(50507) failed: "
-                << WSAGetLastError() << "\n";
+            //std::cerr << "[AudioRelay] bind(50507) failed: "<< WSAGetLastError() << "\n";
             closesocket(udpAudio);
             return;
         }
@@ -632,21 +636,21 @@ void ChatServer::HandleClientAudio()
             //if (rec <= 0) continue;
             if (rec == SOCKET_ERROR)
             {
-                int err = WSAGetLastError();
-                if (err == WSAEWOULDBLOCK)
-                {
-                    // 아직 패킷 없음
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    continue;
-                }
-                else
-                {
-                    char buf[128];
-                    _snprintf_s(buf, sizeof(buf),
-                        "[AudioRelay] recvfrom error: %d\n", err);
-                    //OutputDebugStringA(buf);
-                    break;
-                }
+                //int err = WSAGetLastError();
+                //if (err == WSAEWOULDBLOCK)
+                //{
+                //    // 아직 패킷 없음
+                //    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                //    continue;
+                //}
+                //else
+                //{
+                    //char buf[128];
+                    //_snprintf_s(buf, sizeof(buf),
+                    //    "[AudioRelay] recvfrom error: %d\n", err);
+                    ////OutputDebugStringA(buf);
+                    //break;
+                //}
             }
             if (rec == 0)
             {

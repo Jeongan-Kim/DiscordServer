@@ -20,7 +20,7 @@ typedef SSIZE_T        ssize_t;
 #include <cstring>
 #include <ctime>
 #include <time.h>
-localtime_r(&t, &local_tm);
+
 // Windows 의 SOCKET 타입·상수 대체
 typedef int SOCKET;
 #define INVALID_SOCKET  (-1)
