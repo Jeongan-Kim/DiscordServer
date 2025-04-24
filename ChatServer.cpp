@@ -473,7 +473,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
             // UDP 엔드포인트 맵에도 저장
             // 1) peer 주소 얻기
             sockaddr_in peer{};
-            int len = sizeof(peer);
+            socklen_t  len = sizeof(peer);
             getpeername(clientSocket, (sockaddr*)&peer, &len);
 
             // 2) UDP 엔드포인트 세팅
@@ -610,8 +610,16 @@ void ChatServer::HandleClientAudio()
             return;
         }
 
-        BOOL reuse = TRUE;
+        //BOOL reuse = TRUE;
+        //setsockopt(udpAudio, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse));
+
+        #ifdef _WIN32
+            BOOL reuse = TRUE;
         setsockopt(udpAudio, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse));
+        #else
+            int reuse = 1;
+        setsockopt(udpAudio, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        #endif
 
         sockaddr_in addr = {};
         addr.sin_family = AF_INET;
@@ -627,8 +635,8 @@ void ChatServer::HandleClientAudio()
 
         char audioBuf[65507]; // UDP 최대 유효 데이터 크기
         sockaddr_in from{};
-        int fromLen = sizeof(from);
-
+        //int fromLen = sizeof(from);
+        socklen_t fromLen = sizeof(from);
         while (this->isRunning)
         {
             int rec = recvfrom(udpAudio, audioBuf, sizeof(audioBuf), 0,
