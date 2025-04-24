@@ -4,8 +4,12 @@
 
 #ifdef _WIN32
     #include <winsock2.h>
+    #include <ws2tcpip.h>
+typedef int            socklen_t;
+typedef SSIZE_T        ssize_t;
     #pragma comment(lib, "ws2_32.lib")
 #else
+#define _POSIX_C_SOURCE 200112L
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -14,6 +18,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <cstring>
+#include <ctime>
+#include <time.h>
+localtime_r(&t, &local_tm);
 // Windows 의 SOCKET 타입·상수 대체
 typedef int SOCKET;
 #define INVALID_SOCKET  (-1)

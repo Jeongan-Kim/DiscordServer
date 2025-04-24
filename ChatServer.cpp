@@ -2,6 +2,8 @@
 #include <iostream>
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <time.h>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -28,14 +30,23 @@ std::string Trim(const std::string& str) {
 
 std::string GetFormattedCurrentTime()
 {
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::time_t t = std::time(nullptr);
+
+#ifdef _WIN32
     std::tm local_tm;
-    localtime_s(&local_tm, &time_t_now);
-    std::ostringstream oss;
-    //oss << std::put_time(&local_tm, "%H:%M:%S");
-    oss << std::put_time(&local_tm, "%H:%M");
-    return oss.str();
+    // Windows 에선 localtime_s
+    if (localtime_s(&local_tm, &t) != 0) {
+        // 실패 처리
+    }
+#else
+    std::tm local_tm;
+    // POSIX 에선 localtime_r
+    localtime_r(&t, &local_tm);
+#endif
+
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%H:%M", &local_tm);
+    return buf;
 }
 
 
@@ -90,11 +101,13 @@ bool ChatServer::Start(int port)
 
             char buffer[512];
             sockaddr_in senderAddr;
-            int senderSize = sizeof(senderAddr);
+            //int senderSize = sizeof(senderAddr);
+            socklen_t senderSize = sizeof(senderAddr);
 
             while (isRunning)
             {
-                int len = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0, (sockaddr*)&senderAddr, &senderSize);
+                //int len = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0, (sockaddr*)&senderAddr, &senderSize);
+                ssize_t len = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0, (sockaddr*)&senderAddr, &senderSize);
                 if (len > 0) {
                     buffer[len] = '\0';
                     if (std::string(buffer) == "DISCOVER_SERVER")  //클라이언트로부터 메시지를 받으면
@@ -153,11 +166,13 @@ void ChatServer::StartFileTransgerListrener()
 
         while (true) {
             sockaddr_in clientAddr;
-            int len = sizeof(clientAddr);
-            SOCKET clientSock = accept(listenSock,
-                (sockaddr*)&clientAddr, &len);
+            //int len = sizeof(clientAddr);
+            //SOCKET clientSock = accept(listenSock,
+            //    (sockaddr*)&clientAddr, &len);
+            socklen_t len = sizeof(clientAddr);
+            SOCKET client = accept(listenSock, (sockaddr*)&clientAddr, &len);
             // 클라이언트당 스레드 분기
-            std::thread(&ChatServer::HandleFileUpload, this, clientSock).detach();
+            std::thread(&ChatServer::HandleFileUpload, this, client).detach();
         }
         }).detach();
 }
@@ -219,7 +234,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         std::string firstMessage = Trim(std::string(buffer)); // LOGIN:<id>:<pw> 형식
         std::cout << "[서버] 수신 메시지: "  << firstMessage << std::endl;
 
-        if (firstMessage.starts_with("REGISTER:"))
+        if (firstMessage.rfind("REGISTER:", 0)==0)
         {
             size_t firstColon = firstMessage.find(":");
             size_t secondColon = firstMessage.find(":", firstColon + 1);
@@ -260,7 +275,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
                 }                
             }
         }
-        else if (firstMessage.starts_with("LOGIN:"))
+        else if (firstMessage.rfind("LOGIN:", 0) == 0)
         {
             size_t firstColon = firstMessage.find(":");
             size_t secondColon = firstMessage.find(":", firstColon + 1);
@@ -354,7 +369,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         }
 
         // 채팅방 목록 요청 처리
-        if (trimmed.starts_with("ROOMLIST_REFRESH"))
+        if (trimmed.rfind("ROOMLIST_REFRESH", 0) == 0)
         {
             std::cout << "클라이언트에서 RoomsInfo 요청함" << std::endl;
             // roomsInfo 텍스팅해서 클라이언트에 보내기
@@ -363,11 +378,11 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         }
 
         // 채팅방 생성 처리
-        if (trimmed.starts_with("CREATE_ROOM:"))
+        if (trimmed.rfind("CREATE_ROOM:", 0) == 0)
         {
             std::string msg = trimmed.substr(strlen("CREATE_ROOM:"));
 
-            if (msg.starts_with("PASSWORD_TRUE:"))
+            if (msg.rfind("PASSWORD_TRUE:", 0) == 0)
             {
                 std::string roomInfo = msg.substr(strlen("PASSWORD_TRUE:"));
 
@@ -382,7 +397,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
                 roomList[roomName];
                 roomsInfo[roomName] = password;
             }
-            else if (msg.starts_with("PASSWORD_FALSE:"))
+            else if (msg.rfind("PASSWORD_FALSE:", 0) == 0)
             {
                 std::string roomName = msg.substr(strlen("PASSWORD_FALSE:"));
 
@@ -398,7 +413,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
 
         // 채팅방 참여 처리
-        if (trimmed.starts_with("JOIN_ROOM:")) 
+        if (trimmed.rfind("JOIN_ROOM:", 0) == 0) 
         {
             std::string roomName = trimmed.substr(std::string("JOIN_ROOM:").length());
 
@@ -419,7 +434,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         }
 
         // 채팅방 퇴장 처리
-        if (trimmed.starts_with("LEAVE_ROOM:"))
+        if (trimmed.rfind("LEAVE_ROOM:", 0) == 0)
         {
             std::string roomName = trimmed.substr(std::string("LEAVE_ROOM:").length());
 
@@ -439,7 +454,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         }
 
         // 음성채널 참가 처리
-        if (trimmed.starts_with("VOICE_JOIN:"))
+        if (trimmed.rfind("VOICE_JOIN:", 0) == 0)
         {
             std::string trim = trimmed.substr(std::string("VOICE_JOIN:").length());
             size_t p1 = trim.find(':');
@@ -468,7 +483,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
         }
 
         // 음성채널 퇴장 처리
-        if (trimmed.starts_with("VOICE_LEAVE:"))
+        if (trimmed.rfind("VOICE_LEAVE:", 0) == 0)
         {
             std::string trim = trimmed.substr(std::string("VOICE_LEAVE:").length());
 
@@ -484,7 +499,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
         // 마이크 메시지 수신
         // "VOICE_MIC:roomId:client1,1"
-        if (trimmed.starts_with("VOICE_MIC:"))
+        if (trimmed.rfind("VOICE_MIC:", 0) == 0)
         {
             std::string trim = trimmed.substr(std::string("VOICE_MIC:").length());
 
@@ -502,7 +517,7 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
         // 헤드셋 메시지 수신
         // "VOICE_HEADSET:roomId:client1,1"
-        if (trimmed.starts_with("VOICE_HEADSET:"))
+        if (trimmed.rfind("VOICE_HEADSET:", 0) == 0)
         {
             std::string trim = trimmed.substr(std::string("VOICE_HEADSET:").length());
 
@@ -579,11 +594,11 @@ void ChatServer::HandleClient(SOCKET clientSocket)
 
 void ChatServer::HandleClientAudio()
 {
-    OutputDebugStringA("[AudioRelay] HandleClientAudio() called\n");
+    //OutputDebugStringA("[AudioRelay] HandleClientAudio() called\n");
 
     std::thread([this]() 
         {
-            OutputDebugStringA("[AudioRelay] Thread entry\n");
+            //OutputDebugStringA("[AudioRelay] Thread entry\n");
         SOCKET udpAudio = socket(AF_INET, SOCK_DGRAM, 0);
         if (udpAudio == INVALID_SOCKET) {
             std::cerr << "[AudioRelay] socket() failed: " << WSAGetLastError() << "\n";
@@ -629,20 +644,20 @@ void ChatServer::HandleClientAudio()
                     char buf[128];
                     _snprintf_s(buf, sizeof(buf),
                         "[AudioRelay] recvfrom error: %d\n", err);
-                    OutputDebugStringA(buf);
+                    //OutputDebugStringA(buf);
                     break;
                 }
             }
             if (rec == 0)
             {
-                OutputDebugStringA("[AudioRelay] recvfrom returned 0\n");
+                //OutputDebugStringA("[AudioRelay] recvfrom returned 0\n");
                 continue;
             }
 
             // 헤더 파싱
             //    예: buffer가 "AUDIO:room1:sender:<pcm>" 라면
             std::string msg(audioBuf, audioBuf + rec);
-            if (!msg.starts_with("AUDIO:")) continue;
+            if (msg.rfind("AUDIO:", 0) != 0) continue;
             size_t p1 = msg.find(':', 6);   // roomId
             size_t p2 = msg.find(':', p1 + 1); //sender
 
