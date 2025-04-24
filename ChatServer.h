@@ -1,7 +1,25 @@
 #pragma once
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define NOMINMAX
-#include <winsock2.h>
+
+#ifdef _WIN32
+    #include <winsock2.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <cstring>
+// Windows 의 SOCKET 타입·상수 대체
+typedef int SOCKET;
+#define INVALID_SOCKET  (-1)
+#define SOCKET_ERROR    (-1)
+#define closesocket(s)  ::close(s)
+#endif
 #include <vector>
 #include <thread>
 #include <mutex>

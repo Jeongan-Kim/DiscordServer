@@ -41,14 +41,18 @@ std::string GetFormattedCurrentTime()
 
 ChatServer::ChatServer() 
 {
+#ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
 }
 
 ChatServer::~ChatServer() 
 {
     Stop();
+#ifdef _WIN32
     WSACleanup();
+#endif
 }
 
 bool ChatServer::Start(int port)
